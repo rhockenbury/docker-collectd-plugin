@@ -29,8 +29,7 @@ import json
 import time
 import sys
 import os
-
-PREFIX = "container-"
+import logging
 
 if __name__ != "__main__":
     import collectd
@@ -75,7 +74,7 @@ class Stats:
     def emit(cls, container, type, value, t="", type_instance=""):
         val = collectd.Values()
         val.plugin = "docker"
-        val.plugin_instance = PREFIX + container[:12]
+        val.plugin_instance = container["Names"][0]
         if type:
             val.type = type
         if type_instance:
@@ -110,20 +109,53 @@ class BlkioStats(Stats):
 class CpuStats(Stats):
     @classmethod
     def read(cls, container, stats, t):
-        cpu_usage = stats["cpu_usage"]
-        percpu = cpu_usage["percpu_usage"]
-        for cpu, value in enumerate(percpu):
-            cls.emit(container["Id"], "cpu.percpu.usage", [value],
-                     type_instance="cpu%d" % (cpu,), t=t)
+        # fetch the latest stats
+        total_cont_usage = stats["cpu_usage"]["total_usage"]
+        system_cpu_usage = stats["system_cpu_usage"]
+        percpu_usage = stats["cpu_usage"]["percpu_usage"]
 
-        items = stats["throttling_data"].items()
-        items.sort()
-        cls.emit(container["Id"], "cpu.throttling_data",
-                 [x[1] for x in items], t=t)
+        # default previous stats
+        prev_total_cont_usage = 0
+        prev_system_cpu_usage = 0
+        
+        # try to get previous stats from file,
+        # and save latest stats
+        with open("/etc/collectd/cpu.csv","a+") as f:
+            prev_usage = f.readlines()
 
-        values = [cpu_usage["total_usage"], cpu_usage["usage_in_kernelmode"],
-                  cpu_usage["usage_in_usermode"], stats["system_cpu_usage"]]
-        cls.emit(container["Id"], "cpu.usage", values, t=t)
+            if len(prev_usage) == 2:
+                try: 
+                    prev_total_cont_usage = int(prev_usage[0])
+                    prev_system_cpu_usage = int(prev_usage[1])
+                except ValueError:
+                    logging.error("Could not parse previous cpu usage " +
+                                    "metrics from file - using default values")
+            else:
+                logging.warning("Previous cpu usage metrics not found in " + 
+                                    "file - using default values")
+
+            f.write( str(total_cont_usage) + "\n" + str(system_cpu_usage) )
+
+        # calculate cpu percentage
+        total_cont_delta = total_cont_usage - prev_total_cont_usage
+        system_cpu_delta = system_cpu_usage - prev_system_cpu_usage
+
+        if total_cont_delta > 0 and system_cpu_delta > 0:
+            cpu_percent = (total_cont_delta / system_cpu_delta) * len(percpu_usage) * 100.0
+
+
+        #percpu = cpu_usage["percpu_usage"]
+        #for cpu, value in enumerate(percpu):
+        #    cls.emit(container["Id"], "cpu.percpu.usage", [value],
+        #             type_instance="cpu%d" % (cpu,), t=t)
+
+        #items = stats["throttling_data"].items()
+        #items.sort()
+        #cls.emit(container["Id"], "cpu.throttling_data",
+        #         [x[1] for x in items], t=t)
+        
+        values = [ total_cont_usage, system_cpu_usage, cpu_percent ]
+        cls.emit(container["Names"][0], "cpu.usage", values, t=t)
 
 
 class NetworkStats(Stats):
@@ -146,10 +178,10 @@ class MemoryStats(Stats):
 
 
 class DockerPlugin:
-    CLASSES = {"network": NetworkStats,
-               "blkio_stats": BlkioStats,
+    CLASSES = {#"network": NetworkStats,
+               #"blkio_stats": BlkioStats,
                "cpu_stats": CpuStats,
-               "memory_stats": MemoryStats}
+               #"memory_stats": MemoryStats}
     BASE_URL = 'unix://var/run/docker.sock'
 
     def configure_callback(self, conf):
