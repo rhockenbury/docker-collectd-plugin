@@ -82,7 +82,7 @@ class CpuStats(Stats):
         prev_system_cpu_usage = 0.0
         cpu_percent = 0.0
         percpu_usage = []
-	prev_usage = []
+        prev_usage = []
 
         try: 
             total_cont_usage = float(stats["cpu_usage"]["total_usage"] or 0)
@@ -98,7 +98,7 @@ class CpuStats(Stats):
         cont_name = container["Names"][0] or container["Id"]
         path = "/etc/collectd/stats"
         name = cont_name + "-cpu.stats"
-	stats_file = "%s%s" % (path, name)	
+        stats_file = "%s%s" % (path, name)	
 
         if not os.path.exists(path):
             os.makedirs(path)
