@@ -29,7 +29,6 @@ import json
 import time
 import sys
 import os
-import logging
 
 if __name__ != "__main__":
     import collectd
@@ -50,6 +49,9 @@ else:
     class ExecCollectd:
         def Values(self):
             return ExecCollectdValues()
+	
+	def error(self, msg):
+	    print "ERROR:", msg
 
         def warning(self, msg):
             print "WARNING:", msg
@@ -74,7 +76,7 @@ class Stats:
     def emit(cls, container, type, value, t="", type_instance=""):
         val = collectd.Values()
         val.plugin = "docker"
-        val.plugin_instance = container["Names"][0]
+        val.plugin_instance = container
         if type:
             val.type = type
         if type_instance:
@@ -117,32 +119,43 @@ class CpuStats(Stats):
         # default previous stats
         prev_total_cont_usage = 0
         prev_system_cpu_usage = 0
+	#cpu_percent = 0
         
         # try to get previous stats from file,
         # and save latest stats
-        with open("/etc/collectd/cpu.csv","a+") as f:
-            prev_usage = f.readlines()
+	f = open("/etc/collectd/" + container["Names"][0] + "-cpu.txt","r+")
+        prev_usage =  f.read().split('\n')
+	f.close()
 
-            if len(prev_usage) == 2:
-                try: 
-                    prev_total_cont_usage = int(prev_usage[0])
-                    prev_system_cpu_usage = int(prev_usage[1])
-                except ValueError:
-                    logging.error("Could not parse previous cpu usage " +
+        if len(prev_usage) == 2:
+            try: 
+                prev_total_cont_usage = int(prev_usage[0])
+                prev_system_cpu_usage = int(prev_usage[1])
+            except ValueError:
+                collectd.warning("Could not parse previous cpu usage " +
                                     "metrics from file - using default values")
-            else:
-                logging.warning("Previous cpu usage metrics not found in " + 
+        else:
+            collectd.warning("Previous cpu usage metrics not found in " + 
                                     "file - using default values")
+		
+        total_cont_delta = total_cont_usage - prev_total_cont_usage
+	system_cpu_delta = system_cpu_usage - prev_system_cpu_usage	
+	f = open("/etc/collectd/" + container["Names"][0] + "-cpu.txt", "w+")
 
-            f.write( str(total_cont_usage) + "\n" + str(system_cpu_usage) )
+	f.write( str(total_cont_usage) + "\n" + str(system_cpu_usage) )	
+	f.close(); 
 
         # calculate cpu percentage
-        total_cont_delta = total_cont_usage - prev_total_cont_usage
-        system_cpu_delta = system_cpu_usage - prev_system_cpu_usage
+        #total_cont_delta = total_cont_usage - prev_total_cont_usage
+        #system_cpu_delta = system_cpu_usage - prev_system_cpu_usage
+	
+	#values = [ total_cont_usage, system_cpu_usage, cpu_percent ]
 
-        if total_cont_delta > 0 and system_cpu_delta > 0:
-            cpu_percent = (total_cont_delta / system_cpu_delta) * len(percpu_usage) * 100.0
-
+        if total_cont_delta >= 0 and system_cpu_delta > 0:
+            cpu_percent = (float(total_cont_delta) / float(system_cpu_delta)) * len(percpu_usage) * 100.0
+	    #values.append(cpu_percent)
+	#else: 
+	#    collectd.warning("Unexpected cpu usage metrics - skipping cpu percent calculation")
 
         #percpu = cpu_usage["percpu_usage"]
         #for cpu, value in enumerate(percpu):
@@ -155,39 +168,41 @@ class CpuStats(Stats):
         #         [x[1] for x in items], t=t)
         
         values = [ total_cont_usage, system_cpu_usage, cpu_percent ]
-        cls.emit(container["Names"][0], "cpu.usage", values, t=t)
+        cls.emit(container["Names"][0] or container["Id"], "cpu.usage", values, t=t)
 
 
 class NetworkStats(Stats):
     @classmethod
     def read(cls, container, stats, t):
-        items = stats.items()
-        items.sort()
-        cls.emit(container["Id"], "network.usage", [x[1] for x in items], t=t)
+        values = [ stats["rx_bytes"], stats["rx_errors"], stats["tx_bytes"], stats["tx_errors"] ]
+        cls.emit(container["Names"][0] or container["Id"], "network.usage", values, t=t)
 
 
 class MemoryStats(Stats):
     @classmethod
     def read(cls, container, stats, t):
-        values = [stats["failcnt"], stats["max_usage"], stats["usage"]]
-        cls.emit(container["Id"], "memory.usage", values, t=t)
-
-        for key, value in stats["stats"].items():
-            cls.emit(container["Id"], "memory.stats", [value],
-                     type_instance=key, t=t)
+	usage = stats["usage"]
+	limit = stats["limit"]
+	percent = float(usage) / float(limit) if limit >= 0 else 0
+        values = [usage, limit, percent]
+        cls.emit(container["Names"][0] or container["Id"], "memory.usage", values, t=t)
 
 
 class DockerPlugin:
-    CLASSES = {#"network": NetworkStats,
-               #"blkio_stats": BlkioStats,
+    CLASSES = {"network": NetworkStats,
                "cpu_stats": CpuStats,
-               #"memory_stats": MemoryStats}
-    BASE_URL = 'unix://var/run/docker.sock'
+               "memory_stats": MemoryStats
+	      }
+
+    BASE_URL = "unix://var/run/docker.sock"
+    BASE_STATS = "/usr/share/collectd/stats/"
 
     def configure_callback(self, conf):
         for node in conf.children:
             if node.key == 'BaseURL':
                 self.BASE_URL = node.values[0]
+            #elseif node.key == "BaseStats":
+	#	self.BASE_STATS = node.values[0]
 
     def init_callback(self):
         self.client = DockerClient(base_url=self.BASE_URL)
