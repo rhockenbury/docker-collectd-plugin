@@ -29,7 +29,6 @@ import json
 import time
 import sys
 import os
-import logging
 
 if __name__ != "__main__":
     import collectd
@@ -50,6 +49,9 @@ else:
     class ExecCollectd:
         def Values(self):
             return ExecCollectdValues()
+
+        def error(self, msg):
+            print "ERROR:", msg
 
         def warning(self, msg):
             print "WARNING:", msg
@@ -74,7 +76,7 @@ class Stats:
     def emit(cls, container, type, value, t="", type_instance=""):
         val = collectd.Values()
         val.plugin = "docker"
-        val.plugin_instance = container["Names"][0]
+        val.plugin_instance = container
         if type:
             val.type = type
         if type_instance:
@@ -120,12 +122,12 @@ class CpuStats(Stats):
         
         # try to get previous stats from file,
         # and save latest stats
-        with open("/etc/collectd/cpu.csv","a+") as f:
+        with open("/etc/collectd/" + container["Names"][0] + "_cpu.txt","w+") as f:
             prev_usage = f.readlines()
 
             if len(prev_usage) == 2:
-                try: 
-                    prev_total_cont_usage = int(prev_usage[0])
+                try:
+                    prev_total_cont_usage = int(prev_usage[0][0:-1])
                     prev_system_cpu_usage = int(prev_usage[1])
                 except ValueError:
                     logging.error("Could not parse previous cpu usage " +
@@ -181,7 +183,8 @@ class DockerPlugin:
     CLASSES = {#"network": NetworkStats,
                #"blkio_stats": BlkioStats,
                "cpu_stats": CpuStats,
-               #"memory_stats": MemoryStats}
+               #"memory_stats": MemoryStats
+               }
     BASE_URL = 'unix://var/run/docker.sock'
 
     def configure_callback(self, conf):
