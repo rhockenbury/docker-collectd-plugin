@@ -1,27 +1,6 @@
-#!/usr/bin/env python
-# -*- encoding: utf-8 -*-
 #
 # Collectd plugin for collecting docker container stats
 #
-# Copyright © 2015 eNovance
-#
-# Authors:
-#   Sylvain Baubeau <sylvain.baubeau@enovance.com>
-#
-# This program is free software: you can redistribute it and/or modify
-# it under the terms of the GNU General Public License as published by
-# the Free Software Foundation, either version 3 of the License, or
-# (at your option) any later version.
-#
-# This program is distributed in the hope that it will be useful,
-# but WITHOUT ANY WARRANTY; without even the implied warranty of
-# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-# GNU General Public License for more details.
-#
-# You should have received a copy of the GNU General Public License
-# along with this program.  If not, see <http://www.gnu.org/licenses/>.
-#
-# Requirements: docker-py
 
 import docker
 import dateutil.parser
@@ -49,9 +28,6 @@ else:
     class ExecCollectd:
         def Values(self):
             return ExecCollectdValues()
-	
-	def error(self, msg):
-	    print "ERROR:", msg
 
         def error(self, msg):
             print "ERROR:", msg
@@ -96,80 +72,53 @@ class Stats:
         raise Exception("NotImplemented")
 
 
-class BlkioStats(Stats):
-    @classmethod
-    def read(cls, container, stats, t):
-        for key, values in stats.items():
-            values = [int(x["value"]) for x in values]
-            if len(values) == 5:
-                cls.emit(container["Id"], "blkio", values,
-                         type_instance=key, t=t)
-            elif values:
-                # For some reason, some fields contains only one value and the
-                # 'op' field is empty. Need to investigate this
-                cls.emit(container["Id"], "blkio.single", values,
-                         type_instance=key, t=t)
-
-
 class CpuStats(Stats):
     @classmethod
     def read(cls, container, stats, t):
-        # fetch the latest stats
-        total_cont_usage = stats["cpu_usage"]["total_usage"]
-        system_cpu_usage = stats["system_cpu_usage"]
-        percpu_usage = stats["cpu_usage"]["percpu_usage"]
+        #defaults
+        total_cont_usage = 0.0
+        system_cpu_usage = 0.0
+        prev_total_cont_usage = 0.0
+        prev_system_cpu_usage = 0.0
+        cpu_percent = 0.0
+        percpu_usage = []
 
-        # default previous stats
-        prev_total_cont_usage = 0
-        prev_system_cpu_usage = 0
-	#cpu_percent = 0
+        try: 
+            total_cont_usage = float(stats["cpu_usage"]["total_usage"] or 0)
+            system_cpu_usage = float(stats["system_cpu_usage"] or 0)
+            percpu_usage = stats["cpu_usage"]["percpu_usage"]
+        except ValueError:
+            collectd.warning("Unable to parse memory stats - using defaults")
+        except AttributeError:
+            raise Exception("Invalid stats property access - check changes " + 
+                "to docker stats endpoint")
         
-        # try to get previous stats from file,
-        # and save latest stats
-	f = open("/etc/collectd/" + container["Names"][0] + "-cpu.txt","r+")
-        prev_usage =  f.read().split('\n')
-	f.close()
+        # get previous stats from file, and save latest stats
+        cont_name = container["Names"][0] or container["Id"]
+        stats_file = "/etc/collectd/stats/" + cont_name + "-cpu.stats"
+        with open(stats_file, "w+") as f:
+            prev_usage = f.read().split('\n')
+            f.seek(0)
+            output = "%s\n%s" % (total_cont_usage, system_cpu_usage)
+            f.write(output) 
 
         if len(prev_usage) == 2:
             try: 
-                prev_total_cont_usage = int(prev_usage[0])
-                prev_system_cpu_usage = int(prev_usage[1])
+                prev_total_cont_usage = float(prev_usage[0])
+                prev_system_cpu_usage = float(prev_usage[1])
             except ValueError:
                 collectd.warning("Could not parse previous cpu usage " +
-                                    "metrics from file - using default values")
+                                    "metrics from file - using defaults")
         else:
             collectd.warning("Previous cpu usage metrics not found in " + 
-                                    "file - using default values")
-		
-        total_cont_delta = total_cont_usage - prev_total_cont_usage
-	system_cpu_delta = system_cpu_usage - prev_system_cpu_usage	
-	f = open("/etc/collectd/" + container["Names"][0] + "-cpu.txt", "w+")
-
-	f.write( str(total_cont_usage) + "\n" + str(system_cpu_usage) )	
-	f.close(); 
-
-        # calculate cpu percentage
-        #total_cont_delta = total_cont_usage - prev_total_cont_usage
-        #system_cpu_delta = system_cpu_usage - prev_system_cpu_usage
-	
-	#values = [ total_cont_usage, system_cpu_usage, cpu_percent ]
-
-        if total_cont_delta >= 0 and system_cpu_delta > 0:
-            cpu_percent = (float(total_cont_delta) / float(system_cpu_delta)) * len(percpu_usage) * 100.0
-	    #values.append(cpu_percent)
-	#else: 
-	#    collectd.warning("Unexpected cpu usage metrics - skipping cpu percent calculation")
-
-        #percpu = cpu_usage["percpu_usage"]
-        #for cpu, value in enumerate(percpu):
-        #    cls.emit(container["Id"], "cpu.percpu.usage", [value],
-        #             type_instance="cpu%d" % (cpu,), t=t)
-
-        #items = stats["throttling_data"].items()
-        #items.sort()
-        #cls.emit(container["Id"], "cpu.throttling_data",
-        #         [x[1] for x in items], t=t)
+                                "file - using defaults")
         
+        total_cont_delta = total_cont_usage - prev_total_cont_usage
+        system_cpu_delta = system_cpu_usage - prev_system_cpu_usage 
+
+        if total_cont_delta >= 0.0 and system_cpu_delta > 0.0:
+            cpu_percent = (total_cont_delta / system_cpu_delta) * len(percpu_usage) * 100.0
+
         values = [ total_cont_usage, system_cpu_usage, cpu_percent ]
         cls.emit(container["Names"][0] or container["Id"], "cpu.usage", values, t=t)
 
@@ -177,16 +126,45 @@ class CpuStats(Stats):
 class NetworkStats(Stats):
     @classmethod
     def read(cls, container, stats, t):
-        values = [ stats["rx_bytes"], stats["rx_errors"], stats["tx_bytes"], stats["tx_errors"] ]
+        #defaults
+        rx_bytes = 0
+        rx_errors = 0
+        tx_bytes = 0
+        tx_errors = 0
+
+        try: 
+            rx_bytes = int(stats["rx_bytes"] or 0)
+            rx_errors = int(stats["rx_errors"] or 0)
+            tx_bytes = int(stats["tx_bytes"] or 0)
+            tx_errors = int(stats["tx_errors"] or 0)
+        except ValueError:
+            collectd.warning("Unable to parse memory stats - using defaults")
+        except AttributeError:
+            raise Exception("Invalid stats property access - check changes " + 
+                "to docker stats endpoint")
+
+        values = [rx_bytes, rx_errors, tx_bytes, tx_errors]
         cls.emit(container["Names"][0] or container["Id"], "network.usage", values, t=t)
 
 
 class MemoryStats(Stats):
     @classmethod
     def read(cls, container, stats, t):
-	usage = stats["usage"]
-	limit = stats["limit"]
-	percent = float(usage) / float(limit) if limit >= 0 else 0
+        # defaults
+        usage = 0.0
+        limit = 0.0
+        percent = 0.0
+
+        try: 
+            usage = float(stats["usage"] or 0)
+            limit = float(stats["limit"] or 0)
+            percent = (usage / limit) if limit > 0.0
+        except ValueError:
+            collectd.warning("Unable to parse memory stats - using defaults")
+        except AttributeError:
+            raise Exception("Invalid stats property access - check changes " + 
+                "to docker stats endpoint")
+
         values = [usage, limit, percent]
         cls.emit(container["Names"][0] or container["Id"], "memory.usage", values, t=t)
 
@@ -195,7 +173,7 @@ class DockerPlugin:
     CLASSES = {"network": NetworkStats,
                "cpu_stats": CpuStats,
                "memory_stats": MemoryStats
-	      }
+          }
 
     BASE_URL = "unix://var/run/docker.sock"
     BASE_STATS = "/usr/share/collectd/stats/"
@@ -204,8 +182,10 @@ class DockerPlugin:
         for node in conf.children:
             if node.key == 'BaseURL':
                 self.BASE_URL = node.values[0]
-            #elseif node.key == "BaseStats":
-	#	self.BASE_STATS = node.values[0]
+            elif node.key == "BaseStats":
+                self.BASE_STATS = node.values[0]
+            else: 
+                collectd.warning("Unrecognized conf parameter %s - ignoring" % node.values[0])
 
     def init_callback(self):
         self.client = DockerClient(base_url=self.BASE_URL)
@@ -227,6 +207,7 @@ plugin = DockerPlugin()
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         plugin.BASE_URL = sys.argv[1]
+        plugin.BASE_STATS = sys.argv[2]
     plugin.init_callback()
     plugin.read_callback()
 
