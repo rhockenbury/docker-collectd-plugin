@@ -185,17 +185,14 @@ class DockerPlugin:
     CLASSES = {"network": NetworkStats,
                "cpu_stats": CpuStats,
                "memory_stats": MemoryStats
-          }
+               }
 
     BASE_URL = "unix://var/run/docker.sock"
-    BASE_STATS = "/usr/share/collectd/stats/"
 
     def configure_callback(self, conf):
         for node in conf.children:
             if node.key == 'BaseURL':
                 self.BASE_URL = node.values[0]
-            elif node.key == "BaseStats":
-                self.BASE_STATS = node.values[0]
             else: 
                 collectd.warning("Unrecognized conf parameter %s - ignoring" % node.values[0])
 
@@ -219,7 +216,6 @@ plugin = DockerPlugin()
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         plugin.BASE_URL = sys.argv[1]
-        plugin.BASE_STATS = sys.argv[2]
     plugin.init_callback()
     plugin.read_callback()
 
