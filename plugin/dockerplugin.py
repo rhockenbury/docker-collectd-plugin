@@ -82,6 +82,7 @@ class CpuStats(Stats):
         prev_system_cpu_usage = 0.0
         cpu_percent = 0.0
         percpu_usage = []
+	prev_usage = []
 
         try: 
             total_cont_usage = float(stats["cpu_usage"]["total_usage"] or 0)
@@ -97,18 +98,20 @@ class CpuStats(Stats):
         cont_name = container["Names"][0] or container["Id"]
         path = "/etc/collectd/stats"
         name = cont_name + "-cpu.stats"
+	stats_file = "%s%s" % (path, name)	
 
         if not os.path.exists(path):
             os.makedirs(path)
 
         try:
-            with open(os.path.join(path, name), "rb+") as f:
+            with open(stats_file, "r+") as f:
                 prev_usage = f.read().split('\n')
                 f.seek(0)
                 output = "%s\n%s" % (total_cont_usage, system_cpu_usage)
                 f.write(output) 
         except IOError: 
-            with open(os.path.join(path, name), 'wb') as f:
+	    collectd.warning("%s not found. Creating" % stats_file)
+            with open(stats_file, 'w+') as f:
                 f.write("0.0\n0.0")
 
         if len(prev_usage) == 2:
@@ -167,7 +170,7 @@ class MemoryStats(Stats):
         try: 
             usage = float(stats["usage"] or 0)
             limit = float(stats["limit"] or 0)
-            percent = (usage / limit) if limit > 0.0 else 0.0
+            percent = (usage / limit * 100.0) if limit > 0.0 else 0.0
         except ValueError:
             collectd.warning("Unable to parse memory stats - using defaults")
         except AttributeError:
